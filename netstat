@@ -1,0 +1,165 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <netdb.h>
+
+#define _PATH_PROCNET_TCP		"/proc/net/tcp"
+
+FILE *procinfo;
+
+/* These enums are used by IPX too. :-( */
+enum {
+    TCP_ESTABLISHED = 1,
+    TCP_SYN_SENT,
+    TCP_SYN_RECV,
+    TCP_FIN_WAIT1,
+    TCP_FIN_WAIT2,
+    TCP_TIME_WAIT,
+    TCP_CLOSE,
+    TCP_CLOSE_WAIT,
+    TCP_LAST_ACK,
+    TCP_LISTEN,
+    TCP_CLOSING			/* now a valid state */
+};
+
+static const char *tcp_state[] =
+{
+    "",
+    ("ESTABLISHED"),
+    ("SYN_SENT"),
+    ("SYN_RECV"),
+    ("FIN_WAIT1"),
+    ("FIN_WAIT2"),
+    ("TIME_WAIT"),
+    ("CLOSE"),
+    ("CLOSE_WAIT"),
+    ("LAST_ACK"),
+    ("LISTEN"),
+    ("CLOSING")
+};
+
+static const char* time_state[] =
+{
+	("off"),
+	("on"),
+	("keepalive"),
+	("timewait"),
+	("probe"),
+	("unkn-5"),
+	("unkn-6"),
+	("unkn-7"),
+	("unkn-8"),
+	("unkn-9"),
+	("unkn-10"),
+	("unkn-11")
+};
+
+#define netmin(a,b) ((a)<(b) ? (a) : (b))
+#define netmax(a,b) ((a)>(b) ? (a) : (b))
+
+FILE* proc_fopen(const char* name)
+{
+	static char* buffer;
+	static size_t pagesz;
+	FILE* fd = fopen(name, "r");
+
+	if (fd == NULL)
+		return NULL;
+
+	if (!buffer) {
+		pagesz = getpagesize();
+		buffer = (char*)malloc(pagesz);
+	}
+
+	setvbuf(fd, buffer, _IOFBF, pagesz);
+	return fd;
+}
+
+void Int2Ip(unsigned long long uiIp, char* arrIp)
+{
+	int bN1 = 0, bN2 = 0, bN3 = 0, bN4 = 0;
+	bN1 = (uiIp) & 0xFF;
+	bN2 = (uiIp >> 8) & 0xFF;
+	bN3 = (uiIp >> 16) & 0xFF;
+	bN4 = (uiIp >> 24) & 0xFF;
+	sprintf(arrIp, "%d.%d.%d.%d", bN1, bN2, bN3, bN4);
+}
+
+static void tcp_do_one(int lnr, const char *line, const char *prot)
+{
+    unsigned long rxq, txq, time_len, retr, inode;
+	unsigned long long raddr, laddr;
+    int num, local_port, rem_port, d, state, uid, timer_run, timeout;
+	char r_addr[32], l_addr[32];
+    char rem_addr[128], local_addr[128], timers[64];
+
+    long clk_tck = sysconf(_SC_CLK_TCK);
+
+    if (lnr == 0)
+	return;
+
+    num = sscanf(line,
+    "%d: %64[0-9A-Fa-f]:%X %64[0-9A-Fa-f]:%X %X %lX:%lX %X:%lX %lX %d %d %lu %*s\n",
+		 &d, local_addr, &local_port, rem_addr, &rem_port, &state,
+		 &txq, &rxq, &timer_run, &time_len, &retr, &uid, &timeout, &inode);
+
+	if (!rem_port)
+		return;
+
+    if (num < 11) {
+		fprintf(stderr, ("warning, got bogus tcp line.\n"));
+		return;
+    }
+
+	timers[0] = '\0';
+
+	snprintf(timers, sizeof(timers), ("%s (%2.2f/%ld/%d)"),
+		time_state[timer_run],
+		(double)time_len / clk_tck, 
+		retr, 
+		timeout);
+
+	raddr = strtoll(local_addr, NULL, 16);
+	laddr = strtoll(rem_addr, NULL, 16);
+
+	Int2Ip(raddr, r_addr);
+	Int2Ip(laddr, l_addr);
+
+	printf("%16s %16s ", r_addr, l_addr);
+
+	printf("%6ld %6ld ", local_port, rem_port);
+
+	printf("%6ld %6ld    ", rxq, txq);
+
+	printf("%-11s ", (tcp_state[state]));
+
+	printf(" %s", timers);
+	putchar('\n');
+}
+
+static int tcp_info(void)
+{
+	char buffer[8192];					
+	int rc = 0;
+	int lnr = 0;
+
+	procinfo = proc_fopen((_PATH_PROCNET_TCP));			
+	do {
+
+		if (fgets(buffer, sizeof(buffer), procinfo))
+			(tcp_do_one)(lnr++, buffer, "tcp");
+
+	} while (!feof(procinfo));
+
+	fclose(procinfo);
+
+	return rc;
+}
+
+int main
+ (int argc, char *argv[]) {
+
+	tcp_info();
+
+    return 0;
+}
